@@ -15,6 +15,8 @@ struct DelayGroup: Identifiable, Codable, Equatable {
     var selection: FamilyActivitySelection
     var delayMinutes: Int
     var usageMinutes: Int
+    var delaySeconds: Int?
+    var usageSeconds: Int?
     var backgroundColor: ShieldColor
 
     init(
@@ -23,13 +25,17 @@ struct DelayGroup: Identifiable, Codable, Equatable {
         selection: FamilyActivitySelection = FamilyActivitySelection(),
         delayMinutes: Int = 1,
         usageMinutes: Int = 10,
-        backgroundColor: ShieldColor = .systemBackground
+        delaySeconds: Int? = nil,
+        usageSeconds: Int? = nil,
+        backgroundColor: ShieldColor = .yellow
     ) {
         self.id = id
         self.name = name
         self.selection = selection
         self.delayMinutes = delayMinutes
         self.usageMinutes = usageMinutes
+        self.delaySeconds = delaySeconds ?? delayMinutes * 60
+        self.usageSeconds = usageSeconds ?? usageMinutes * 60
         self.backgroundColor = backgroundColor
     }
 
@@ -41,14 +47,25 @@ struct DelayGroup: Identifiable, Codable, Equatable {
         "usage-\(id.uuidString)"
     }
 
+    var delayDurationSeconds: Int {
+        delaySeconds ?? delayMinutes * 60
+    }
+
+    var usageDurationSeconds: Int {
+        usageSeconds ?? usageMinutes * 60
+    }
+
     func normalized() -> DelayGroup {
         var copy = self
         copy.name = copy.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if copy.name.isEmpty {
             copy.name = "Group"
         }
-        copy.delayMinutes = min(max(copy.delayMinutes, 1), 240)
-        copy.usageMinutes = min(max(copy.usageMinutes, 1), 240)
+        copy.delaySeconds = min(max(copy.delayDurationSeconds, 1), 86_400)
+        copy.usageSeconds = min(max(copy.usageDurationSeconds, 1), 86_400)
+        copy.delayMinutes = max(1, Int(ceil(Double(copy.delaySeconds ?? 60) / 60)))
+        copy.usageMinutes = max(1, Int(ceil(Double(copy.usageSeconds ?? 60) / 60)))
+        copy.backgroundColor = .yellow
         return copy
     }
 }
@@ -58,7 +75,7 @@ struct ShieldColor: Codable, Equatable {
     var green: Double
     var blue: Double
 
-    static let systemBackground = ShieldColor(red: 1, green: 1, blue: 1)
+    static let yellow = ShieldColor(red: 1, green: 0.8, blue: 0)
 
     var uiColor: UIColor {
         UIColor(red: red, green: green, blue: blue, alpha: 1)

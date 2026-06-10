@@ -18,11 +18,11 @@ enum ScreenTimePolicy {
 
     static func unlockAfterDelay(for group: DelayGroup, completion: @escaping () -> Void) {
         let now = Date()
-        let unlocksAt = now.addingTimeInterval(TimeInterval(group.delayMinutes * 60))
-        let relocksAt = unlocksAt.addingTimeInterval(TimeInterval(group.usageMinutes * 60))
+        let unlocksAt = now.addingTimeInterval(TimeInterval(group.delayDurationSeconds))
+        let relocksAt = unlocksAt.addingTimeInterval(TimeInterval(group.usageDurationSeconds))
         saveCountdown(CountdownState(groupID: group.id, unlocksAt: unlocksAt, relocksAt: relocksAt))
 
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(group.delayMinutes * 60)) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(group.delayDurationSeconds)) {
             unshield(group)
             startUsageMonitor(for: group)
             completion()
@@ -88,13 +88,11 @@ enum ScreenTimePolicy {
 
     static func formattedCountdownText(for group: DelayGroup) -> String {
         guard let countdown = countdown(for: group.id), countdown.unlocksAt > Date() else {
-            return "\(group.delayMinutes) min wait. \(group.usageMinutes) min access."
+            return "\(formatDuration(group.delayDurationSeconds)) wait. \(formatDuration(group.usageDurationSeconds)) access."
         }
 
         let seconds = max(0, Int(countdown.unlocksAt.timeIntervalSinceNow.rounded()))
-        let minutesPart = seconds / 60
-        let secondsPart = seconds % 60
-        return String(format: "%02d:%02d until unlock", minutesPart, secondsPart)
+        return "\(formatClock(seconds)) until unlock"
     }
 
     private static var defaults: UserDefaults? {
@@ -113,7 +111,7 @@ enum ScreenTimePolicy {
     }
 
     private static func startUsageMonitor(for group: DelayGroup) {
-        let threshold = DateComponents(minute: group.usageMinutes)
+        let threshold = durationComponents(for: group.usageDurationSeconds)
         let event: DeviceActivityEvent
         if #available(iOS 17.4, *) {
             event = DeviceActivityEvent(
@@ -156,5 +154,36 @@ enum ScreenTimePolicy {
 
     private static func clearCountdown(groupID: UUID) {
         defaults?.removeObject(forKey: AppConstants.countdownKeyPrefix + groupID.uuidString)
+    }
+
+    private static func durationComponents(for seconds: Int) -> DateComponents {
+        DateComponents(
+            hour: seconds / 3600,
+            minute: (seconds % 3600) / 60,
+            second: seconds % 60
+        )
+    }
+
+    private static func formatDuration(_ seconds: Int) -> String {
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let remainingSeconds = seconds % 60
+
+        var parts: [String] = []
+        if hours > 0 { parts.append("\(hours) hr") }
+        if minutes > 0 { parts.append("\(minutes) min") }
+        if remainingSeconds > 0 || parts.isEmpty { parts.append("\(remainingSeconds) sec") }
+        return parts.joined(separator: " ")
+    }
+
+    private static func formatClock(_ seconds: Int) -> String {
+        let hours = seconds / 3600
+        let minutes = (seconds % 3600) / 60
+        let remainingSeconds = seconds % 60
+
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, remainingSeconds)
+        }
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 }

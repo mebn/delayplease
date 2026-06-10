@@ -5,63 +5,87 @@ import Foundation
 @MainActor
 final class GroupStore: ObservableObject {
     @Published private(set) var groups: [DelayGroup] = []
+    @Published private(set) var authorizationStatus: AuthorizationStatus
+    @Published private(set) var isRequestingAuthorization = false
+    @Published private(set) var hasRequestedAuthorization = false
     @Published private(set) var isAuthorized = false
     @Published var errorMessage: String?
 
     init() {
-        groups = GroupPersistence.loadGroups()
-        if groups.isEmpty {
+        authorizationStatus = AuthorizationCenter.shared.authorizationStatus
+        let loadedGroups = GroupPersistence.loadGroups()
+
+        if let firstGroup = loadedGroups.first {
+            groups = [firstGroup]
+        } else {
             groups = [
-                DelayGroup(name: "Social", delayMinutes: 1, usageMinutes: 10)
+                DelayGroup(name: "Delay", delayMinutes: 1, usageMinutes: 10)
             ]
-            persistAndApply()
         }
+
         refreshAuthorization()
+        persistAndApply()
+
+        if isAuthorized {
+            for oldGroup in loadedGroups.dropFirst() {
+                ScreenTimePolicy.clearGroup(id: oldGroup.id)
+            }
+        }
+    }
+
+    var primaryGroup: DelayGroup {
+        groups.first ?? DelayGroup(name: "Delay")
     }
 
     func refreshAuthorization() {
-        isAuthorized = AuthorizationCenter.shared.authorizationStatus == .approved
+        authorizationStatus = AuthorizationCenter.shared.authorizationStatus
+        isAuthorized = authorizationStatus == .approved
+    }
+
+    func requestAuthorizationIfNeeded() async {
+        refreshAuthorization()
+        guard authorizationStatus == .notDetermined else { return }
+        await requestAuthorization()
     }
 
     func requestAuthorization() async {
+        guard !isRequestingAuthorization else { return }
+        isRequestingAuthorization = true
+        defer {
+            isRequestingAuthorization = false
+            hasRequestedAuthorization = true
+            refreshAuthorization()
+            persistAndApply()
+        }
+
         do {
             try await AuthorizationCenter.shared.requestAuthorization(for: .individual)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
-        refreshAuthorization()
     }
 
-    func addGroup() {
-        groups.append(DelayGroup(name: "Group \(groups.count + 1)"))
+    func updatePrimary(_ group: DelayGroup) {
+        groups = [group.normalized()]
         persistAndApply()
     }
 
-    func delete(_ id: UUID) {
-        ScreenTimePolicy.clearGroup(id: id)
-        groups.removeAll { $0.id == id }
-        persistAndApply()
+    func updatePrimary<Value>(_ keyPath: WritableKeyPath<DelayGroup, Value>, to value: Value) {
+        var group = primaryGroup
+        group[keyPath: keyPath] = value
+        updatePrimary(group)
     }
 
-    func update(_ group: DelayGroup) {
-        guard let index = groups.firstIndex(where: { $0.id == group.id }) else { return }
-        groups[index] = group.normalized()
-        persistAndApply()
-    }
-
-    func updateSelection(_ selection: FamilyActivitySelection, for id: UUID) {
-        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
-        groups[index].selection = selection
-        persistAndApply()
-    }
-
-    func group(with id: UUID) -> DelayGroup? {
-        groups.first { $0.id == id }
+    func updateSelection(_ selection: FamilyActivitySelection) {
+        var group = primaryGroup
+        group.selection = selection
+        updatePrimary(group)
     }
 
     private func persistAndApply() {
         GroupPersistence.save(groups)
+        guard isAuthorized else { return }
         ScreenTimePolicy.lock(groups: groups)
     }
 }

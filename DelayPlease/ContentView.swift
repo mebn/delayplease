@@ -3,252 +3,167 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var store = GroupStore()
-    @State private var pickerGroupID: UUID?
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    @State private var isPickerPresented = false
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(store.groups) { group in
-                        GroupTile(
-                            group: group,
-                            onChange: store.update,
-                            onDelete: { store.delete(group.id) },
-                            onPick: { pickerGroupID = group.id }
-                        )
-                    }
-
-                    AddGroupTile {
-                        store.addGroup()
-                    }
-                }
-                .padding(16)
-            }
-            .background(Color(.systemBackground))
-            .navigationTitle("Delay Please")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Task { await store.requestAuthorization() }
-                    } label: {
-                        Image(systemName: store.isAuthorized ? "checkmark.circle" : "hourglass.circle")
-                    }
-                    .accessibilityLabel(store.isAuthorized ? "Screen Time allowed" : "Allow Screen Time")
-                }
-            }
-            .safeAreaInset(edge: .top) {
-                if !store.isAuthorized || store.errorMessage != nil {
-                    StatusStrip(
-                        isAuthorized: store.isAuthorized,
-                        message: store.errorMessage,
+            Group {
+                if store.isAuthorized {
+                    homeForm
+                } else if store.isRequestingAuthorization || (store.authorizationStatus == .notDetermined && !store.hasRequestedAuthorization) {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    AuthorizationRequiredView(
                         requestAuthorization: {
                             Task { await store.requestAuthorization() }
                         }
                     )
                 }
             }
+            .background(Color(.systemBackground))
+            .navigationTitle("Delay Please")
         }
         .familyActivityPicker(
             headerText: "Choose apps and websites",
-            footerText: "Selected items use the delay and limit in this group.",
-            isPresented: pickerPresented,
+            footerText: "Selected apps and websites use these delay settings.",
+            isPresented: $isPickerPresented,
             selection: activeSelection
         )
         .task {
-            store.refreshAuthorization()
+            await store.requestAuthorizationIfNeeded()
         }
     }
 
-    private var pickerPresented: Binding<Bool> {
-        Binding(
-            get: { pickerGroupID != nil },
-            set: { isPresented in
-                if !isPresented {
-                    pickerGroupID = nil
+    private var homeForm: some View {
+        Form {
+            Section("App picker") {
+                Button {
+                    isPickerPresented = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "app.badge")
+                            .frame(width: 24)
+                        Text("Choose Apps and Websites")
+                        Spacer()
+                        Text(selectionSummary)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                    }
+                    .foregroundStyle(.blue)
                 }
+
+                Text("Select the apps, categories, and websites that should be delayed. Websites can also be added by searching for them.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-        )
+
+            Section("Time settings") {
+                DatePicker(
+                    "Wait",
+                    selection: waitTime,
+                    in: timeRange,
+                    displayedComponents: .hourAndMinute
+                )
+
+                DatePicker(
+                    "Use",
+                    selection: useTime,
+                    in: timeRange,
+                    displayedComponents: .hourAndMinute
+                )
+
+                Text("Wait is how long access stays blocked before opening. Use is how long access stays available before it locks again.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var selectionSummary: String {
+        let selection = store.primaryGroup.selection
+        let count = selection.applicationTokens.count
+            + selection.categoryTokens.count
+            + selection.webDomainTokens.count
+        return count == 0 ? "None" : "\(count) selected"
     }
 
     private var activeSelection: Binding<FamilyActivitySelection> {
         Binding(
-            get: {
-                guard let pickerGroupID else { return FamilyActivitySelection() }
-                return store.group(with: pickerGroupID)?.selection ?? FamilyActivitySelection()
-            },
+            get: { store.primaryGroup.selection },
             set: { selection in
-                guard let pickerGroupID else { return }
-                store.updateSelection(selection, for: pickerGroupID)
+                store.updateSelection(selection)
             }
         )
     }
+
+    private var waitTime: Binding<Date> {
+        durationBinding(
+            seconds: store.primaryGroup.delayDurationSeconds,
+            setSeconds: { store.updatePrimary(\.delaySeconds, to: $0) }
+        )
+    }
+
+    private var useTime: Binding<Date> {
+        durationBinding(
+            seconds: store.primaryGroup.usageDurationSeconds,
+            setSeconds: { store.updatePrimary(\.usageSeconds, to: $0) }
+        )
+    }
+
+    private var timeRange: ClosedRange<Date> {
+        durationDate(for: 60)...durationDate(for: 86_340)
+    }
+
+    private func durationBinding(seconds: Int, setSeconds: @escaping (Int) -> Void) -> Binding<Date> {
+        Binding(
+            get: { durationDate(for: seconds) },
+            set: { date in
+                setSeconds(max(60, min(secondsSinceStartOfDay(for: date), 86_340)))
+            }
+        )
+    }
+
+    private func durationDate(for seconds: Int) -> Date {
+        let clampedSeconds = max(60, min(seconds, 86_340))
+        return Calendar.current.date(
+            byAdding: .second,
+            value: clampedSeconds,
+            to: durationStartDate
+        ) ?? durationStartDate
+    }
+
+    private func secondsSinceStartOfDay(for date: Date) -> Int {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return ((components.hour ?? 0) * 3600) + ((components.minute ?? 1) * 60)
+    }
+
+    private var durationStartDate: Date {
+        Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1)) ?? Date(timeIntervalSinceReferenceDate: 0)
+    }
 }
 
-private struct StatusStrip: View {
-    let isAuthorized: Bool
-    let message: String?
+private struct AuthorizationRequiredView: View {
     let requestAuthorization: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(message ?? "Screen Time permission needed")
-                .font(.footnote)
+        VStack(spacing: 14) {
+            Image(systemName: "hourglass.circle")
+                .font(.system(size: 46, weight: .regular))
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .accessibilityHidden(true)
 
-            Spacer(minLength: 8)
-
-            if !isAuthorized {
-                Button("Allow", action: requestAuthorization)
-                    .buttonStyle(.bordered)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Color(.systemBackground))
-    }
-}
-
-private struct GroupTile: View {
-    let group: DelayGroup
-    let onChange: (DelayGroup) -> Void
-    let onDelete: () -> Void
-    let onPick: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                TextField("Group", text: binding(\.name))
-                    .font(.subheadline.weight(.semibold))
-                    .textFieldStyle(.plain)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-
-                Button(role: .destructive, action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.subheadline)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete group")
-            }
-
-            Button(action: onPick) {
-                HStack(spacing: 8) {
-                    Image(systemName: "app.badge")
-                    Text(selectionSummary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                    Spacer(minLength: 0)
-                }
-            }
-            .buttonStyle(.bordered)
-            .font(.caption)
-
-            VStack(spacing: 8) {
-                NumberField(
-                    title: "Wait",
-                    suffix: "min",
-                    value: binding(\.delayMinutes)
-                )
-
-                NumberField(
-                    title: "Use",
-                    suffix: "min",
-                    value: binding(\.usageMinutes)
-                )
-            }
-
-            HStack {
-                Text("Color")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                ColorPicker(
-                    "Block color",
-                    selection: Binding(
-                        get: { Color(uiColor: group.backgroundColor.uiColor) },
-                        set: { newColor in
-                            var updated = group
-                            updated.backgroundColor = ShieldColor(color: newColor)
-                            onChange(updated.normalized())
-                        }
-                    ),
-                    supportsOpacity: false
-                )
-                .labelsHidden()
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private var selectionSummary: String {
-        let count = group.selection.applicationTokens.count
-            + group.selection.categoryTokens.count
-            + group.selection.webDomainTokens.count
-        return count == 0 ? "Choose" : "\(count)"
-    }
-
-    private func binding<Value>(_ keyPath: WritableKeyPath<DelayGroup, Value>) -> Binding<Value> {
-        Binding(
-            get: { group[keyPath: keyPath] },
-            set: { newValue in
-                var updated = group
-                updated[keyPath: keyPath] = newValue
-                onChange(updated.normalized())
-            }
-        )
-    }
-}
-
-private struct NumberField: View {
-    let title: String
-    let suffix: String
-    @Binding var value: Int
-
-    var body: some View {
-        HStack {
-            Text(title)
+            Text("Screen Time access is needed")
+                .font(.body)
+                .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .frame(width: 34, alignment: .leading)
-            Spacer()
-            TextField(title, value: $value, format: .number)
-                .keyboardType(.numberPad)
-                .multilineTextAlignment(.trailing)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .frame(width: 34)
-            Text(suffix)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-        }
-        .font(.caption)
-    }
-}
+                .padding(.horizontal, 32)
 
-private struct AddGroupTile: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "plus")
-                .font(.title2)
-                .frame(maxWidth: .infinity, minHeight: 96)
+            Button("Grant Access", action: requestAuthorization)
+                .buttonStyle(.borderedProminent)
         }
-        .buttonStyle(.plain)
-        .background(Color(.tertiarySystemFill))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .accessibilityLabel("Create group")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
     }
 }
